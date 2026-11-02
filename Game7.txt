@@ -1,0 +1,1265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>HSK Balloon Arena - Supercell Edition</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Google 经典街机英文字体 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Noto+Sans+SC:wght@700;900&display=swap" rel="stylesheet">
+  <!-- MQTT.js 跨局域网/公网毫秒级实时通信引擎 -->
+  <script src="https://unpkg.com/mqtt@5.3.5/dist/mqtt.min.js"></script>
+
+  <style>
+    body {
+      font-family: 'Lilita One', system-ui, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+
+    /* 规范中文粗黑体 (笔画绝不粘连变形，结构标准清晰) */
+    .standard-hanzi-text {
+      font-family: -apple-system, "PingFang SC", "Source Han Sans CN", "Noto Sans SC", "Microsoft YaHei", "SimHei", sans-serif !important;
+      font-weight: 900 !important;
+      line-height: 1.05;
+      letter-spacing: 0.02em;
+      color: #FFE600;
+      background: linear-gradient(180deg, #FFFFFF 0%, #FFF275 22%, #FFB800 65%, #FF6B00 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      /* 采用外层多重硬阴影表达 3D 挤压，不再用 stroke 破坏汉字内部笔画 */
+      filter: drop-shadow(0 4px 0 #7A2800) drop-shadow(0 8px 0 #000000);
+    }
+
+    .sc-stroke { -webkit-text-stroke: 2.5px #000; }
+    .sc-stroke-sm { -webkit-text-stroke: 1.5px #000; }
+
+    /* Supercell 3D 物理按键厚底与按压反馈 */
+    .sc-btn {
+      transition: transform 0.06s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.06s cubic-bezier(0.4, 0, 0.2, 1);
+      border: 3.5px solid #000;
+    }
+    .sc-btn:active:not(:disabled), .sc-btn-active {
+      transform: translateY(6px) !important;
+      box-shadow: 0 2px 0 #000 !important;
+    }
+
+    /* 角色上下漂浮 */
+    @keyframes floatPilot {
+      0%, 100% { transform: translateY(0px) rotate(0deg); }
+      50% { transform: translateY(-8px) rotate(1.2deg); }
+    }
+    .animate-float { animation: floatPilot 2.4s ease-in-out infinite; }
+
+    /* 命悬一线发抖动效 */
+    @keyframes panicTremble {
+      0%, 100% { transform: translate(0, 0); }
+      25% { transform: translate(-3px, 1px) rotate(-3deg); }
+      50% { transform: translate(3px, -1px) rotate(3deg); }
+      75% { transform: translate(-2px, -2px) rotate(-1deg); }
+    }
+    .animate-panic { animation: panicTremble 0.12s ease-in-out infinite; }
+
+    /* 鮟鱇鱼发光触角摆动 */
+    @keyframes lureSway {
+      0%, 100% { transform: rotate(-5deg); }
+      50% { transform: rotate(6deg); }
+    }
+    .animate-lure { transform-origin: bottom center; animation: lureSway 2.2s ease-in-out infinite; }
+
+    /* 海水波浪平移 */
+    @keyframes waveRoll {
+      0% { transform: translateX(0); }
+      50% { transform: translateX(-35px); }
+      100% { transform: translateX(0); }
+    }
+    .animate-wave { animation: waveRoll 3.6s ease-in-out infinite; }
+  </style>
+</head>
+<body class="bg-gradient-to-b from-[#2FD5F6] via-[#65B7F3] to-[#1E67C6] h-screen w-screen overflow-hidden flex flex-col justify-between relative">
+
+  <!-- ========================================================================= -->
+  <!-- 容器 A：电脑/投影大屏幕端主界面 (ROLE = SCREEN)                             -->
+  <!-- ========================================================================= -->
+  <div id="screenView" class="h-full w-full flex flex-col justify-between relative">
+
+    <!-- 天空厚涂几何白云背景 -->
+    <div class="absolute inset-0 pointer-events-none z-0 overflow-hidden">
+      <div class="absolute top-10 left-12 opacity-85">
+        <div class="w-36 h-12 bg-white border-4 border-black rounded-full shadow-[0_6px_0_rgba(0,0,0,0.15)]"></div>
+        <div class="w-20 h-20 bg-white border-4 border-black rounded-full absolute -top-8 left-8"></div>
+      </div>
+      <div class="absolute top-16 right-16 opacity-85">
+        <div class="w-48 h-14 bg-white border-4 border-black rounded-full shadow-[0_6px_0_rgba(0,0,0,0.15)]"></div>
+        <div class="w-24 h-24 bg-white border-4 border-black rounded-full absolute -top-10 right-12"></div>
+      </div>
+    </div>
+
+    <!-- 顶部 HUD 街机切角看板 -->
+    <header class="relative z-30 px-8 pt-4 flex items-center justify-between">
+      <!-- 红队看板 -->
+      <div class="flex items-center gap-3 bg-[#FF385C] border-4 border-black px-5 py-2.5 rounded-3xl shadow-[0_8px_0_#8A0020] transform -rotate-1">
+        <div class="flex flex-col">
+          <div class="flex items-center gap-2">
+            <span class="text-2xl font-black text-white tracking-wide sc-stroke-sm italic">RED SQUAD</span>
+            <span class="bg-black/30 text-amber-200 text-xs px-2.5 py-0.5 rounded-full font-mono font-bold">[A] 抢答</span>
+          </div>
+          <div id="redHealthSlots" class="flex items-center gap-1.5 mt-1.5"></div>
+        </div>
+      </div>
+
+      <!-- 顶部中央：3D 倒计时与回合标识 -->
+      <div class="flex flex-col items-center">
+        <div class="bg-[#1F2937] border-2 border-black text-amber-300 text-xs font-black px-4 py-0.5 rounded-full uppercase tracking-wider mb-1.5 shadow-[0_3px_0_#000]">
+          <span id="roundIndicator">ROUND 1 / 5</span>
+        </div>
+        <div class="bg-amber-400 border-4 border-black px-8 py-1 rounded-3xl shadow-[0_8px_0_#92400E] flex flex-col items-center relative overflow-hidden min-w-[210px]">
+          <div class="flex items-center gap-2 z-10">
+            <span class="text-xs font-black text-amber-950 uppercase tracking-tight">TIME</span>
+            <span id="timerNumber" class="text-4xl font-black text-white sc-stroke tracking-wider">15s</span>
+          </div>
+          <div id="timerProgressBar" class="absolute bottom-0 left-0 h-2 bg-emerald-500 w-full transition-all duration-1000 ease-linear"></div>
+        </div>
+      </div>
+
+      <!-- 右侧：蓝队看板与控制入口 -->
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-3 bg-[#2B7FFF] border-4 border-black px-5 py-2.5 rounded-3xl shadow-[0_8px_0_#003399] transform rotate-1">
+          <div class="flex flex-col items-end">
+            <div class="flex items-center gap-2">
+              <span class="bg-black/30 text-sky-200 text-xs px-2.5 py-0.5 rounded-full font-mono font-bold">抢答 [L]</span>
+              <span class="text-2xl font-black text-white tracking-wide sc-stroke-sm italic">BLUE SQUAD</span>
+            </div>
+            <div id="blueHealthSlots" class="flex items-center gap-1.5 mt-1.5"></div>
+          </div>
+        </div>
+
+        <!-- 📱 手机扫码抢答端弹窗按钮 -->
+        <button onclick="openQRModal()" title="手机扫码加入游戏" class="sc-btn bg-amber-400 hover:bg-amber-300 text-slate-900 px-4 py-2.5 rounded-2xl shadow-[0_6px_0_#92400E] flex items-center gap-1.5 text-sm font-black">
+          <span class="text-base">📱</span> Join via Phone
+        </button>
+
+        <!-- 题库管理入口 -->
+        <button onclick="openQuestionModal()" title="题库管理与自动生成" class="sc-btn bg-emerald-500 hover:bg-emerald-400 text-white px-3.5 py-2.5 rounded-2xl shadow-[0_6px_0_#065F46] flex items-center gap-1 text-sm font-black">
+          <span>📝</span> 题库
+        </button>
+
+        <!-- 静音按钮 -->
+        <button onclick="toggleAudioMaster()" title="音效开关" class="sc-btn bg-slate-800 text-white p-2.5 rounded-2xl shadow-[0_6px_0_#000]">
+          <span id="audioIcon" class="text-lg">🔊</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- 中央主舞台：更具细节的 Supercell 级角色与规范大牌 -->
+    <main class="relative z-20 flex-1 flex items-center justify-between px-10 max-h-[58vh]">
+      <!-- 左侧红队小人 (Baron Red: 鲜红复古皮盔、大号护目镜、毛领夹克、金牙笑脸) -->
+      <div id="redPilotZone" class="w-64 flex flex-col items-center transition-all duration-500 ease-out">
+        <div id="redBalloonCluster" class="flex justify-center -space-x-4 mb-1"></div>
+        <div class="w-2 bg-gradient-to-b from-stone-900 to-amber-950 h-8 -mt-2 shadow-sm"></div>
+        <div id="redPilotAvatar" class="relative animate-float filter drop-shadow-[0_8px_0_rgba(0,0,0,0.25)]"></div>
+      </div>
+
+      <!-- 中央核心悬挂告示牌 -->
+      <div class="flex-1 max-w-xl mx-4 flex flex-col items-center">
+        <!-- 吊绳 -->
+        <div class="w-full flex justify-between px-16 -mb-3 z-10 pointer-events-none">
+          <div class="w-3.5 h-10 bg-gradient-to-b from-stone-800 to-amber-950 border-2 border-black rounded-sm shadow-md"></div>
+          <div class="w-3.5 h-10 bg-gradient-to-b from-stone-800 to-amber-950 border-2 border-black rounded-sm shadow-md"></div>
+        </div>
+
+        <!-- 木牌本体 -->
+        <div id="mainWoodBoard" class="w-full bg-[#B45309] border-[5px] border-black rounded-3xl p-6 shadow-[0_12px_0_#5F2600,0_20px_25px_rgba(0,0,0,0.4)] relative text-center">
+          <!-- 4 角铆钉 -->
+          <div class="absolute top-2.5 left-2.5 w-4 h-4 rounded-full bg-slate-300 border-2 border-black shadow-inner flex items-center justify-center"><div class="w-1 h-1 bg-black rounded-full"></div></div>
+          <div class="absolute top-2.5 right-2.5 w-4 h-4 rounded-full bg-slate-300 border-2 border-black shadow-inner flex items-center justify-center"><div class="w-1 h-1 bg-black rounded-full"></div></div>
+          <div class="absolute bottom-2.5 left-2.5 w-4 h-4 rounded-full bg-slate-300 border-2 border-black shadow-inner flex items-center justify-center"><div class="w-1 h-1 bg-black rounded-full"></div></div>
+          <div class="absolute bottom-2.5 right-2.5 w-4 h-4 rounded-full bg-slate-300 border-2 border-black shadow-inner flex items-center justify-center"><div class="w-1 h-1 bg-black rounded-full"></div></div>
+
+          <!-- 牌面内衬 -->
+          <div class="bg-[#FDE68A] border-4 border-black rounded-2xl py-6 px-4 shadow-inner relative overflow-hidden">
+            <!-- 抢答锁定全屏横幅 -->
+            <div id="buzzOverlayBanner" class="hidden absolute inset-0 z-20 bg-black/75 backdrop-blur-xs flex flex-col items-center justify-center p-2">
+              <div id="buzzSquadTag" class="border-4 border-black px-6 py-2 rounded-2xl text-2xl font-black text-white shadow-[0_6px_0_#000] animate-bounce italic">
+                RED SQUAD BUZZED!
+              </div>
+              <p class="text-amber-300 font-black text-xs mt-2 bg-black/80 px-4 py-1 rounded-full border border-amber-300/40">
+                请大声口答！点击【💡揭晓】或裁决
+              </p>
+            </div>
+
+            <!-- 规范粗黑体核心汉字 (笔画规范绝不粘连) -->
+            <div class="my-3 cursor-pointer transition-transform hover:scale-105 active:scale-95" onclick="toggleReveal()" title="点击揭晓答案">
+              <span id="centerHanziText" class="standard-hanzi-text text-9xl block select-none">
+                买
+              </span>
+            </div>
+
+            <!-- 3D 题型标签 -->
+            <div class="inline-block transform -rotate-2 bg-[#FF385C] border-2 border-black px-4 py-0.5 rounded-full shadow-[0_3px_0_#000] mt-1">
+              <span class="text-white text-xs font-black tracking-widest uppercase">LISTEN & PRONOUNCE</span>
+            </div>
+
+            <!-- 答案揭晓框 (Scaffolding) -->
+            <div id="scaffoldDrawer" class="hidden mt-4 pt-4 border-t-4 border-black/20 flex flex-col items-center bg-amber-200/95 rounded-xl p-3 border-2 border-black">
+              <div class="flex items-center gap-3">
+                <span id="revealPinyin" class="text-3xl font-black text-amber-950 font-mono">mǎi</span>
+                <button onclick="speakCurrentWord()" class="sc-btn bg-amber-400 p-2 rounded-xl shadow-[0_3px_0_#B45309]" title="朗读示范发音">
+                  <svg class="w-5 h-5 text-black" fill="currentColor" viewBox="0 0 24 24"><path d="M14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77zm-2.5-2.23l-5 4H2v14h4.5l5 4V1z"/></svg>
+                </button>
+              </div>
+              <div id="revealMeaning" class="text-sm font-bold text-slate-800 mt-1">释义: to buy</div>
+              <div id="revealCollocation" class="text-xs font-black text-emerald-800 bg-white/80 border border-black/30 px-3 py-1 rounded-full mt-2">
+                常用搭配: 买东西 (Go shopping)
+              </div>
+            </div>
+          </div>
+
+          <!-- 老师一键快速裁决条 -->
+          <div class="mt-4 flex gap-3">
+            <button onclick="handleVerdict(true)" class="flex-1 sc-btn bg-[#00E054] hover:bg-[#00c94b] text-white py-2.5 rounded-xl text-lg font-black shadow-[0_6px_0_#007722] flex items-center justify-center gap-1">
+              ✔ 正确 (保留)
+            </button>
+            <button onclick="toggleReveal()" class="sc-btn bg-amber-400 text-black px-4 py-2 rounded-xl text-sm font-black shadow-[0_6px_0_#92400E]">
+              💡 揭晓
+            </button>
+            <button onclick="handleVerdict(false)" class="flex-1 sc-btn bg-[#FF385C] hover:bg-[#eb2b4e] text-white py-2.5 rounded-xl text-lg font-black shadow-[0_6px_0_#8A0020] flex items-center justify-center gap-1">
+              ✘ 错误 (扣球)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右侧蓝队小人 (Captain Blue: 通讯天线蓝盔、战术仪表盘、战术马甲) -->
+      <div id="bluePilotZone" class="w-64 flex flex-col items-center transition-all duration-500 ease-out">
+        <div id="blueBalloonCluster" class="flex justify-center -space-x-4 mb-1"></div>
+        <div class="w-2 bg-gradient-to-b from-stone-900 to-blue-950 h-8 -mt-2 shadow-sm"></div>
+        <div id="bluePilotAvatar" class="relative animate-float filter drop-shadow-[0_8px_0_rgba(0,0,0,0.25)]"></div>
+      </div>
+    </main>
+
+    <!-- 底部深海怪鱼与大蘑菇头按钮托盘 -->
+    <footer class="relative z-30 flex flex-col justify-end">
+      <!-- 怪鱼视觉层 -->
+      <div class="relative w-full h-28 flex items-end justify-center pointer-events-none">
+        <div id="monsterFishContainer" class="absolute -bottom-2 z-10 flex flex-col items-center transition-all duration-300">
+          <div class="animate-lure relative -mb-6 flex flex-col items-center z-20">
+            <div class="w-6 h-6 rounded-full bg-amber-300 border-2 border-black shadow-[0_0_22px_#FFE600] animate-pulse"></div>
+            <div class="w-2 h-14 border-r-4 border-t-4 border-black rounded-tr-full"></div>
+          </div>
+          <!-- 鮟鱇鱼 SVG -->
+          <svg width="340" height="150" viewBox="0 0 340 150" fill="none" class="filter drop-shadow-[0_8px_0_rgba(0,0,0,0.3)]">
+            <path d="M 40 85 C 10 70, 0 110, 30 115 Z" fill="#8B5CF6" stroke="#000" stroke-width="4"/>
+            <path d="M 300 85 C 330 70, 340 110, 310 115 Z" fill="#8B5CF6" stroke="#000" stroke-width="4"/>
+            <ellipse cx="170" cy="115" rx="135" ry="75" fill="url(#anglerGradient)" stroke="#000" stroke-width="5"/>
+            <defs>
+              <linearGradient id="anglerGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" stop-color="#10B981" /><stop offset="60%" stop-color="#059669" /><stop offset="100%" stop-color="#831843" />
+              </linearGradient>
+            </defs>
+            <circle cx="120" cy="55" r="22" fill="#FFFFFF" stroke="#000" stroke-width="4"/><circle cx="130" cy="56" r="10" fill="#000"/><circle cx="132" cy="53" r="3.5" fill="#FFF"/>
+            <circle cx="220" cy="55" r="22" fill="#FFFFFF" stroke="#000" stroke-width="4"/><circle cx="210" cy="56" r="10" fill="#000"/><circle cx="208" cy="53" r="3.5" fill="#FFF"/>
+            <path d="M 85 95 C 85 65, 255 65, 255 95 C 255 135, 85 135, 85 95 Z" fill="#3B0764" stroke="#000" stroke-width="5"/>
+            <polygon points="105,75 115,92 125,75" fill="#FFF" stroke="#000" stroke-width="2"/>
+            <polygon points="135,74 145,94 155,74" fill="#FFF" stroke="#000" stroke-width="2"/>
+            <polygon points="185,74 195,94 205,74" fill="#FFF" stroke="#000" stroke-width="2"/>
+            <polygon points="215,75 225,92 235,75" fill="#FFF" stroke="#000" stroke-width="2"/>
+            <polygon points="120,118 130,100 140,118" fill="#FFF" stroke="#000" stroke-width="2"/>
+            <polygon points="160,119 170,98 180,119" fill="#FFF" stroke="#000" stroke-width="2"/>
+            <polygon points="200,118 210,100 220,118" fill="#FFF" stroke="#000" stroke-width="2"/>
+          </svg>
+        </div>
+        <!-- 翻滚海浪 -->
+        <div class="absolute bottom-0 w-full overflow-hidden leading-none z-20">
+          <svg class="relative block w-[200%] h-12 text-[#1E40AF] fill-current animate-wave opacity-95" viewBox="0 0 1200 120" preserveAspectRatio="none">
+            <path d="M0,0 C150,90 350,-40 500,45 C650,130 900,10 1200,40 L1200,120 L0,120 Z"></path>
+          </svg>
+        </div>
+      </div>
+
+      <!-- 控制底座托盘 -->
+      <div class="bg-[#0F172A] border-t-4 border-black px-8 py-3.5 flex items-center justify-between shadow-2xl relative z-30">
+        <button id="redBuzzerBtn" onclick="triggerBuzz('red')" class="sc-btn bg-[#FF385C] hover:bg-[#e62b4e] text-white px-9 py-3 rounded-2xl text-3xl font-black shadow-[0_8px_0_#800018] flex items-center gap-3">
+          <span class="w-4 h-4 rounded-full bg-white animate-pulse"></span> RED BUZZ [A]
+        </button>
+        <div class="flex items-center gap-3.5">
+          <button onclick="navigateQuestion(-1)" class="sc-btn bg-slate-700 hover:bg-slate-600 text-white px-5 py-2.5 rounded-2xl text-sm font-black shadow-[0_6px_0_#0F172A]">◀ PREV</button>
+          <button onclick="resetTimer()" class="sc-btn bg-amber-400 hover:bg-amber-300 text-black px-6 py-2.5 rounded-2xl text-sm font-black shadow-[0_6px_0_#92400E]">⏱ RESET TIME</button>
+          <button onclick="navigateQuestion(1)" class="sc-btn bg-[#00E054] hover:bg-[#00c94b] text-white px-7 py-2.5 rounded-2xl text-sm font-black shadow-[0_6px_0_#007722]">NEXT ROUND ▶</button>
+        </div>
+        <button id="blueBuzzerBtn" onclick="triggerBuzz('blue')" class="sc-btn bg-[#2B7FFF] hover:bg-[#1a6ee6] text-white px-9 py-3 rounded-2xl text-3xl font-black shadow-[0_8px_0_#002B80] flex items-center gap-3">
+          BLUE BUZZ [L] <span class="w-4 h-4 rounded-full bg-white animate-pulse"></span>
+        </button>
+      </div>
+    </footer>
+
+    <!-- 二维码加入弹窗 (支持手动修改局域网 IP / 一键测试) -->
+    <div id="qrModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+      <div class="bg-[#FFFDF6] border-[6px] border-black rounded-3xl p-6 max-w-md w-full shadow-[0_16px_0_#000] text-center">
+        <div class="flex justify-between items-center pb-2 border-b-4 border-black mb-3">
+          <h3 class="text-2xl font-black uppercase tracking-wide">📱 SCAN TO JOIN ARENA</h3>
+          <button onclick="closeQRModal()" class="text-2xl font-black hover:text-rose-600">✕</button>
+        </div>
+
+        <p class="text-xs font-bold text-slate-500 mb-3">
+          Students scan with mobile camera to select squad and buzz!
+        </p>
+
+        <!-- 二维码图像 -->
+        <div class="flex justify-center p-3 bg-white border-4 border-black rounded-2xl shadow-inner mb-3 inline-block mx-auto">
+          <img id="qrCodeImg" src="" alt="QR Code" class="w-48 h-48 block">
+        </div>
+
+        <!-- 局域网/域名检测与手动替换配置（防止本地 localhost 导致手机无法连入） -->
+        <div class="bg-amber-100 border-2 border-black rounded-xl p-3 mb-3 text-left">
+          <div class="flex justify-between items-center text-xs font-mono font-bold text-amber-900 mb-1">
+            <span>ROOM: <b id="roomCodeDisplay" class="text-base text-rose-600 font-black">----</b></span>
+            <span id="screenMqttStatus" class="text-emerald-700 font-bold">Connecting...</span>
+          </div>
+          <div class="text-[11px] text-slate-600 font-bold mb-1">
+            ⚠️ 手机访问地址（若使用本地电脑，请将 localhost 改为电脑局域网 IP 如 192.168.x.x）：
+          </div>
+          <div class="flex gap-1.5">
+            <input type="text" id="hostOverrideInput" class="flex-1 text-xs font-mono font-bold p-1.5 border-2 border-black rounded-lg bg-white" placeholder="http://192.168.x.x:5500" onchange="updateQRCodeFromInput()">
+            <button onclick="updateQRCodeFromInput()" class="sc-btn bg-amber-400 text-black px-2.5 py-1 rounded-lg text-xs font-black shadow-[0_2px_0_#92400E]">更新</button>
+          </div>
+        </div>
+
+        <div class="flex gap-2">
+          <a id="mobileDirectLink" href="#" target="_blank" class="flex-1 sc-btn bg-sky-400 text-black py-2.5 rounded-xl text-xs font-black shadow-[0_3px_0_#0284C7] flex items-center justify-center gap-1">
+            🖥️ 电脑新标签开一个手机端
+          </a>
+          <button onclick="closeQRModal()" class="sc-btn bg-amber-400 text-black px-6 py-2.5 rounded-xl text-xs font-black shadow-[0_3px_0_#92400E]">
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 题库管理模态窗口 -->
+    <div id="questionModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+      <div class="bg-[#FFFDF6] border-[6px] border-black rounded-3xl p-6 max-w-xl w-full shadow-[0_16px_0_#000] flex flex-col max-h-[88vh]">
+        <div class="flex items-center justify-between pb-3 border-b-4 border-black mb-4">
+          <div class="flex items-center gap-2">
+            <span class="text-2xl">📝</span>
+            <h2 class="text-2xl font-black uppercase tracking-wide">HSK 题库管理 & 智能生成</h2>
+          </div>
+          <button onclick="closeQuestionModal()" class="text-2xl font-black hover:text-rose-600">✕</button>
+        </div>
+
+        <div class="bg-amber-100 border-4 border-black rounded-2xl p-4 mb-4 shadow-[0_4px_0_#B45309]">
+          <label class="block text-xs font-black uppercase text-amber-950 mb-1.5">
+            输入汉字或英文直接回车（如：买 或 buy）
+          </label>
+          <div class="flex gap-2">
+            <input type="text" id="smartInput" placeholder="输入汉字或英文..." 
+                   class="flex-1 border-3 border-black rounded-xl px-3 py-2 text-base font-bold focus:outline-none focus:ring-4 focus:ring-amber-300"
+                   onkeydown="if(event.key==='Enter') handleAddWord()">
+            <button onclick="handleAddWord()" class="sc-btn bg-[#00E054] text-white px-5 py-2 rounded-xl text-sm font-black shadow-[0_4px_0_#007722]">
+              + 添加
+            </button>
+          </div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto pr-1 mb-4">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs font-black uppercase text-slate-600">本次所有题目列表 (<span id="modalTotalRounds">0</span>)</span>
+            <span class="text-xs font-bold text-slate-400">点击项目可直接跳转定位</span>
+          </div>
+          <div id="modalRoundsList" class="space-y-2"></div>
+        </div>
+
+        <div class="pt-3 border-t-4 border-black flex items-center justify-between gap-3">
+          <div class="flex gap-2">
+            <button onclick="loadDefaultPresetQuestions()" class="sc-btn bg-amber-300 text-black px-3 py-2 rounded-xl text-xs font-black shadow-[0_3px_0_#B45309]">🎲 预设题</button>
+            <button onclick="clearAllQuestions()" class="sc-btn bg-rose-500 text-white px-3 py-2 rounded-xl text-xs font-black shadow-[0_3px_0_#880015]">🗑 清空</button>
+          </div>
+          <button onclick="applyAndCloseModal()" class="sc-btn bg-[#00E054] text-white px-6 py-2.5 rounded-xl text-sm font-black shadow-[0_4px_0_#007722]">
+            ✔ 应用开战
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 整局结束胜利结算弹窗 (Game Over & Play Again) -->
+    <div id="gameOverModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+      <div class="bg-[#FFFDF6] border-[8px] border-black rounded-3xl p-8 max-w-lg w-full shadow-[0_20px_0_#000] text-center">
+        <div class="inline-block bg-amber-400 border-4 border-black px-6 py-1.5 rounded-full text-xs font-black uppercase tracking-widest mb-3 shadow-[0_4px_0_#000]">
+          VICTORY CELEBRATION
+        </div>
+        <h2 id="winnerTitle" class="text-5xl font-black text-slate-900 sc-stroke-sm my-2">
+          🏆 RED SQUAD WINS!
+        </h2>
+        <p class="text-slate-600 font-bold text-sm mb-6">
+          The monster fish claimed all opposing balloons!
+        </p>
+
+        <!-- 醒目的大绿色 Supercell 3D 重新开局按键 -->
+        <button onclick="restartGame()" class="w-full sc-btn bg-[#00E054] hover:bg-[#00c94b] text-white py-4 rounded-2xl text-3xl font-black shadow-[0_10px_0_#007722] flex items-center justify-center gap-3">
+          <span>🔄</span> PLAY AGAIN
+        </button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- 容器 B：手机端界面 (ROLE = MOBILE，全英文，状态持久化，无震动)                  -->
+  <!-- ========================================================================= -->
+  <div id="mobileView" class="hidden h-full w-full flex flex-col justify-between p-6 bg-gradient-to-b from-[#1E293B] to-[#0F172A] text-white">
+    
+    <!-- 连接状态顶栏 -->
+    <div class="w-full flex justify-between items-center text-xs font-mono text-slate-400 border-b border-slate-700 pb-2">
+      <span>ROOM: <b id="mobileRoomCodeText" class="text-amber-400">----</b></span>
+      <span id="mobileConnStatus" class="flex items-center gap-1 font-bold text-amber-400">
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> Connecting...
+      </span>
+    </div>
+
+    <!-- 手机端 Step 1: 选队伍 (SELECT YOUR SQUAD) -->
+    <div id="mobileStepSquad" class="flex-1 flex flex-col justify-between py-6">
+      <header class="text-center pt-2">
+        <div class="inline-block bg-amber-400 text-black font-black text-xs px-3 py-1 rounded-full border-2 border-black uppercase tracking-wider mb-2 shadow-[0_2px_0_#000]">
+          BALLOON ARENA
+        </div>
+        <h1 class="text-3xl font-black text-amber-300 sc-stroke-sm tracking-wider">SELECT YOUR SQUAD</h1>
+        <p class="text-xs text-slate-400 mt-1">Pick a squad once. Stay locked in for all rounds!</p>
+      </header>
+
+      <div class="flex flex-col gap-6 my-auto">
+        <button onclick="mobileChooseSquad('red')" class="sc-btn bg-[#FF385C] active:bg-[#e02d4f] text-white py-6 rounded-3xl text-2xl font-black shadow-[0_10px_0_#8A0020] flex items-center justify-center gap-3">
+          <span class="text-3xl">🔴</span> JOIN RED SQUAD
+        </button>
+        <button onclick="mobileChooseSquad('blue')" class="sc-btn bg-[#2B7FFF] active:bg-[#206edb] text-white py-6 rounded-3xl text-2xl font-black shadow-[0_10px_0_#003399] flex items-center justify-center gap-3">
+          <span class="text-3xl">🔵</span> JOIN BLUE SQUAD
+        </button>
+      </div>
+
+      <footer class="text-center pb-2 text-xs font-mono text-slate-500">
+        Touch anywhere to activate audio • No vibration
+      </footer>
+    </div>
+
+    <!-- 手机端 Step 2: 抢答界面 (GIANT BUZZER) -->
+    <div id="mobileStepBuzzer" class="hidden flex-1 flex flex-col justify-between items-center py-4">
+      <header class="w-full text-center">
+        <div id="mobileIdentityBadge" class="inline-block border-4 border-black px-6 py-2 rounded-2xl font-black text-lg shadow-[0_4px_0_#000] tracking-wider uppercase">
+          YOU ARE IN RED SQUAD
+        </div>
+        <div id="mobileStatusTip" class="text-sm font-bold text-amber-300 mt-2 h-6">
+          WAITING FOR SCREEN...
+        </div>
+      </header>
+
+      <!-- 占据屏幕 75% 面积的超级大号街机按键 (无震动) -->
+      <div class="w-full flex-1 flex items-center justify-center my-2">
+        <button id="mobileGiantBuzzBtn" onclick="mobilePressBuzz()" disabled
+                class="w-full max-w-xs aspect-square rounded-full border-8 border-black flex flex-col items-center justify-center relative select-none transition-all duration-75 bg-slate-600 text-slate-400 shadow-[0_10px_0_#334155] cursor-not-allowed">
+          <div class="absolute inset-4 rounded-full border-4 border-white/20 pointer-events-none"></div>
+          <span id="mobileGiantBtnIcon" class="text-6xl mb-2">🔒</span>
+          <span id="mobileGiantBtnText" class="text-3xl font-black tracking-widest uppercase">WAITING...</span>
+        </button>
+      </div>
+
+      <footer class="text-center pb-1 text-xs font-bold text-slate-500">
+        HSK Super Arena • English Controller
+      </footer>
+    </div>
+
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- 业务逻辑、矢量 IP 角色渲染与 MQTT WebSocket 双向通信                         -->
+  <!-- ========================================================================= -->
+  <script>
+    // ---------- 1. 题库与字典 ----------
+    const BUILTIN_DICTIONARY = [
+      { hanzi: '买', pinyin: 'mǎi', meaning: 'to buy', collocation: '买东西 (Go shopping) / 买苹果' },
+      { hanzi: '水', pinyin: 'shuǐ', meaning: 'water', collocation: '喝水 (Drink water) / 水果' },
+      { hanzi: '看', pinyin: 'kàn', meaning: 'to look / read', collocation: '看书 (Read book) / 看电影' },
+      { hanzi: '吃', pinyin: 'chī', meaning: 'to eat', collocation: '吃饭 (Eat meal) / 吃苹果' },
+      { hanzi: '大', pinyin: 'dà', meaning: 'big / large', collocation: '大人 (Adult) / 大苹果' },
+      { hanzi: '小', pinyin: 'xiǎo', meaning: 'small / little', collocation: '小猫 (Kitten) / 小朋友' },
+      { hanzi: '好', pinyin: 'hǎo', meaning: 'good / well', collocation: '你好 (Hello) / 好吃' },
+      { hanzi: '猫', pinyin: 'māo', meaning: 'cat', collocation: '一只猫 (A cat) / 小花猫' },
+      { hanzi: '狗', pinyin: 'gǒu', meaning: 'dog', collocation: '一只狗 (A dog) / 小狗' },
+      { hanzi: '老师', pinyin: 'lǎoshī', meaning: 'teacher', collocation: '王老师 (Teacher Wang)' }
+    ];
+
+    let questions = JSON.parse(localStorage.getItem('hsk_supercell_bank')) || [...BUILTIN_DICTIONARY.slice(0, 5)];
+
+    let gameState = {
+      qIndex: 0,
+      redBalloons: 5,
+      blueBalloons: 5,
+      maxBalloons: 5,
+      timer: 15,
+      maxTime: 15,
+      timerActive: false,
+      timerInterval: null,
+      buzzedTeam: null,
+      revealed: false,
+      status: 'WAITING'
+    };
+
+    // ---------- 2. Web Audio 音效引擎 ----------
+    class SoundFX {
+      constructor() {
+        this.ctx = null;
+        this.muted = false;
+      }
+      init() {
+        if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+      }
+      playTone(freq, type, duration, gainVal = 0.2, delay = 0) {
+        if (this.muted) return;
+        this.init();
+        setTimeout(() => {
+          try {
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+            gain.gain.setValueAtTime(gainVal, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + duration);
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.start();
+            osc.stop(this.ctx.currentTime + duration);
+          } catch(e) {}
+        }, delay * 1000);
+      }
+      buzz() {
+        this.playTone(880, 'sine', 0.35, 0.3);
+        this.playTone(440, 'triangle', 0.2, 0.3, 0.04);
+      }
+      pop() {
+        this.playTone(900, 'square', 0.05, 0.3);
+        this.playTone(280, 'sawtooth', 0.15, 0.25, 0.02);
+      }
+      slideDrop() {
+        if (this.muted) return;
+        this.init();
+        try {
+          const osc = this.ctx.createOscillator();
+          const gain = this.ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(750, this.ctx.currentTime);
+          osc.frequency.exponentialRampToValueAtTime(140, this.ctx.currentTime + 0.65);
+          gain.gain.setValueAtTime(0.25, this.ctx.currentTime);
+          gain.gain.linearRampToValueAtTime(0.001, this.ctx.currentTime + 0.65);
+          osc.connect(gain);
+          gain.connect(this.ctx.destination);
+          osc.start();
+          osc.stop(this.ctx.currentTime + 0.65);
+        } catch(e) {}
+      }
+      chomp() {
+        this.playTone(130, 'sawtooth', 0.3, 0.4);
+        this.playTone(85, 'square', 0.4, 0.45, 0.05);
+      }
+      correct() {
+        [523.2, 659.2, 783.9, 1046.5].forEach((f, i) => this.playTone(f, 'triangle', 0.22, 0.25, i * 0.08));
+      }
+      wrong() {
+        this.playTone(220, 'square', 0.22, 0.3);
+        this.playTone(145, 'sawtooth', 0.35, 0.3, 0.12);
+      }
+      tap() {
+        this.playTone(700, 'sine', 0.04, 0.2);
+      }
+    }
+    const SFX = new SoundFX();
+
+    // ---------- 3. 路由识别与通信引擎 (MQTT over WSS + BroadcastChannel 双通道) ----------
+    const urlParams = new URLSearchParams(window.location.search);
+    const isMobileRole = urlParams.get('role') === 'mobile';
+    let roomId = urlParams.get('room');
+    if (!roomId) {
+      roomId = Math.floor(1000 + Math.random() * 9000).toString();
+    }
+
+    const localBroadcastChan = new BroadcastChannel(`hsk_arena_${roomId}`);
+    const MQTT_TOPIC = `hsk_super_arena/room_${roomId}`;
+    let mqttClient = null;
+
+    function initNetworkComm() {
+      // 1. 本地多标签广播监听
+      localBroadcastChan.onmessage = (event) => handleIncomingMessage(event.data);
+
+      // 2. 跨网络公共 WebSocket MQTT 客户端
+      try {
+        mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt', {
+          clientId: `hsk_${isMobileRole ? 'mob' : 'scr'}_${Math.random().toString(16).slice(2, 8)}`,
+          clean: true,
+          connectTimeout: 4000
+        });
+
+        mqttClient.on('connect', () => {
+          updateNetworkStatus(true);
+          mqttClient.subscribe(MQTT_TOPIC);
+          if (isMobileRole) {
+            // 手机上线发送加入打招呼
+            broadcastPayload({ type: 'MOBILE_HELLO' });
+          } else {
+            // 大屏上线广播当前状态
+            broadcastPayload({ type: 'SYNC_STATE', status: gameState.status, buzzedTeam: gameState.buzzedTeam });
+          }
+        });
+
+        mqttClient.on('message', (topic, message) => {
+          try {
+            const data = JSON.parse(message.toString());
+            handleIncomingMessage(data);
+          } catch(e) {}
+        });
+
+        mqttClient.on('error', () => updateNetworkStatus(false));
+        mqttClient.on('close', () => updateNetworkStatus(false));
+      } catch(e) {
+        updateNetworkStatus(false);
+      }
+    }
+
+    function updateNetworkStatus(isConnected) {
+      if (isMobileRole) {
+        const el = document.getElementById('mobileConnStatus');
+        if (el) {
+          el.innerHTML = isConnected 
+            ? `<span class="w-2 h-2 rounded-full bg-emerald-400"></span> <span class="text-emerald-400">Online</span>`
+            : `<span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> <span class="text-amber-400">Connecting...</span>`;
+        }
+      } else {
+        const el = document.getElementById('screenMqttStatus');
+        if (el) {
+          el.innerHTML = isConnected ? `🟢 Network Ready` : `🟡 Connecting Broker...`;
+        }
+      }
+    }
+
+    function broadcastPayload(payload) {
+      // 通道 1: BroadcastChannel
+      localBroadcastChan.postMessage(payload);
+      // 通道 2: MQTT WebSocket
+      if (mqttClient && mqttClient.connected) {
+        mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload));
+      }
+    }
+
+    // ---------- 4. Supercell 高细节 Q版飞行员矢量 IP 角色 ----------
+    function getDetailedPilotSVG(team) {
+      const isRed = team === 'red';
+      const helmetColor = isRed ? '#FF385C' : '#2B7FFF';
+      const darkHelmet = isRed ? '#800018' : '#002B80';
+      const suitColor = isRed ? '#FF4757' : '#1E90FF';
+
+      if (isRed) {
+        // 【红队：王牌狂傲飞行员 Baron Red】
+        return `
+          <svg width="150" height="150" viewBox="0 0 150 150" fill="none">
+            <!-- 飘逸的黄色领巾 -->
+            <path d="M 60 102 C 50 115, 30 120, 20 125 C 28 112, 38 108, 48 102 Z" fill="#FFC700" stroke="#000" stroke-width="3"/>
+            <path d="M 65 104 C 60 122, 45 135, 35 140 C 45 125, 55 118, 62 105 Z" fill="#E5A700" stroke="#000" stroke-width="3"/>
+
+            <!-- 身体：毛领红夹克 + 金星勋章 -->
+            <rect x="50" y="96" width="50" height="42" rx="14" fill="${suitColor}" stroke="#000" stroke-width="4"/>
+            <!-- 棕色飞行手套牵引绳 -->
+            <circle cx="36" cy="112" r="11" fill="#78350F" stroke="#000" stroke-width="3.5"/>
+            <circle cx="114" cy="112" r="11" fill="#78350F" stroke="#000" stroke-width="3.5"/>
+            <!-- 领口羊羔白毛领 -->
+            <ellipse cx="75" cy="98" rx="28" ry="10" fill="#FFFBEB" stroke="#000" stroke-width="3.5"/>
+            <!-- 金星徽章 -->
+            <polygon points="62,112 64,117 69,117 65,120 67,125 62,122 57,125 59,120 55,117 60,117" fill="#FFD700" stroke="#000" stroke-width="1.5"/>
+
+            <!-- 头部外盔 (红色硬质皮盔) -->
+            <circle cx="75" cy="58" r="44" fill="${helmetColor}" stroke="#000" stroke-width="4.5"/>
+            <!-- 钢制耳罩与铆钉 -->
+            <rect x="26" y="52" width="12" height="24" rx="5" fill="#475569" stroke="#000" stroke-width="3"/>
+            <circle cx="32" cy="64" r="2" fill="#CBD5E1"/>
+            <rect x="112" y="52" width="12" height="24" rx="5" fill="#475569" stroke="#000" stroke-width="3"/>
+            <circle cx="118" cy="64" r="2" fill="#CBD5E1"/>
+
+            <!-- 圆形脸蛋 -->
+            <circle cx="75" cy="64" r="32" fill="#FED7AA" stroke="#000" stroke-width="3.8"/>
+
+            <!-- 额头战术护目镜 (镜片带蓝天高光反光) -->
+            <rect x="38" y="32" width="32" height="20" rx="8" fill="#38BDF8" stroke="#000" stroke-width="3.8"/>
+            <path d="M 44 36 L 56 36" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
+            <rect x="80" y="32" width="32" height="20" rx="8" fill="#38BDF8" stroke="#000" stroke-width="3.8"/>
+            <path d="M 86 36 L 98 36" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round"/>
+            <rect x="70" y="38" width="10" height="6" fill="#000"/>
+
+            <!-- 得意挑眉与大笑露出金牙 -->
+            <path d="M 52 57 Q 62 52 68 56" stroke="#000" stroke-width="3.5" stroke-linecap="round"/>
+            <circle cx="60" cy="64" r="5" fill="#000"/>
+            <circle cx="62" cy="62" r="1.5" fill="#FFF"/>
+
+            <path d="M 98 57 Q 88 52 82 56" stroke="#000" stroke-width="3.5" stroke-linecap="round"/>
+            <circle cx="90" cy="64" r="5" fill="#000"/>
+            <circle cx="92" cy="62" r="1.5" fill="#FFF"/>
+
+            <!-- 咧嘴大笑 + 标志性闪烁金牙 -->
+            <path d="M 60 74 Q 75 90 90 74 Z" fill="#991B1B" stroke="#000" stroke-width="3.5"/>
+            <polygon points="62,75 69,75 68,80 62,78" fill="#FFD700" stroke="#000" stroke-width="1.2"/>
+          </svg>
+        `;
+      } else {
+        // 【蓝队：技术先锋副驾 Captain Blue】
+        return `
+          <svg width="150" height="150" viewBox="0 0 150 150" fill="none">
+            <!-- 头部天线 (带红色发光警报头) -->
+            <line x1="75" y1="18" x2="75" y2="2" stroke="#000" stroke-width="3.5"/>
+            <circle cx="75" cy="2" r="5" fill="#EF4444" stroke="#000" stroke-width="2.5"/>
+
+            <!-- 身体：战术马甲 + 压力表与无线电通讯机 -->
+            <rect x="50" y="96" width="50" height="42" rx="14" fill="${suitColor}" stroke="#000" stroke-width="4"/>
+            <circle cx="36" cy="112" r="11" fill="#334155" stroke="#000" stroke-width="3.5"/>
+            <circle cx="114" cy="112" r="11" fill="#334155" stroke="#000" stroke-width="3.5"/>
+            <!-- 压力计仪表盘 -->
+            <circle cx="64" cy="118" r="8" fill="#FFF" stroke="#000" stroke-width="2.5"/>
+            <line x1="64" y1="118" x2="68" y2="114" stroke="#EF4444" stroke-width="2"/>
+            <!-- 肩膀无线对讲机 -->
+            <rect x="88" y="104" width="9" height="16" rx="2" fill="#0F172A" stroke="#000" stroke-width="2"/>
+
+            <!-- 蓝色硬盔 -->
+            <circle cx="75" cy="58" r="44" fill="${helmetColor}" stroke="#000" stroke-width="4.5"/>
+            <rect x="26" y="52" width="12" height="24" rx="5" fill="#475569" stroke="#000" stroke-width="3"/>
+            <rect x="112" y="52" width="12" height="24" rx="5" fill="#475569" stroke="#000" stroke-width="3"/>
+
+            <!-- 脸蛋 -->
+            <circle cx="75" cy="64" r="32" fill="#FED7AA" stroke="#000" stroke-width="3.8"/>
+
+            <!-- 圆形护目镜罩在双眼上 -->
+            <circle cx="58" cy="60" r="15" fill="#38BDF8" stroke="#000" stroke-width="3.5"/>
+            <circle cx="58" cy="60" r="6" fill="#000"/>
+            <circle cx="60" cy="58" r="2" fill="#FFF"/>
+            <path d="M 48 54 A 10 10 0 0 1 65 50" stroke="#FFF" stroke-width="2" stroke-linecap="round"/>
+
+            <circle cx="92" cy="60" r="15" fill="#38BDF8" stroke="#000" stroke-width="3.5"/>
+            <circle cx="92" cy="60" r="6" fill="#000"/>
+            <circle cx="94" cy="58" r="2" fill="#FFF"/>
+            <path d="M 82 54 A 10 10 0 0 1 99 50" stroke="#FFF" stroke-width="2" stroke-linecap="round"/>
+            <rect x="71" y="58" width="8" height="4" fill="#000"/>
+
+            <!-- 汗珠 -->
+            <path d="M 106 50 C 103 48, 100 54, 106 57 C 111 54, 109 48, 106 50" fill="#38BDF8" stroke="#000" stroke-width="1.5"/>
+
+            <!-- 紧绷咬牙或颤抖小嘴 -->
+            <path d="M 60 80 Q 75 73 90 80" stroke="#000" stroke-width="3.5" stroke-linecap="round"/>
+          </svg>
+        `;
+      }
+    }
+
+    function getBalloonSVG(colorHex, size = 36) {
+      return `
+        <svg width="${size}" height="${size * 1.25}" viewBox="0 0 32 40" fill="none" class="filter drop-shadow-[0_4px_0_rgba(0,0,0,0.3)]">
+          <path d="M16 2 C7.16 2 0 9.16 0 18 C0 25.5 8 32 16 34 C24 32 32 25.5 32 18 C32 9.16 24.84 2 16 2 Z" fill="${colorHex}" stroke="#000" stroke-width="3.5"/>
+          <path d="M 6 12 A 11 11 0 0 1 18 5" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" opacity="0.85"/>
+          <polygon points="12,34 20,34 18,38 14,38" fill="${colorHex}" stroke="#000" stroke-width="2.5"/>
+        </svg>
+      `;
+    }
+
+    // ---------- 5. 大屏端业务流程 (SCREEN LOGIC) ----------
+    function initScreenMode() {
+      document.getElementById('screenView').classList.remove('hidden');
+      document.getElementById('mobileView').classList.add('hidden');
+
+      renderScreen();
+      startTimer();
+      setupQRUrlDefault();
+    }
+
+    function setupQRUrlDefault() {
+      let hostUrl = window.location.href.split('?')[0];
+      // 如果检测到是以 file: 打开，提供提示
+      if (window.location.protocol === 'file:') {
+        hostUrl = 'http://192.168.1.100:5500/index.html'; // 占位局域网示范
+      }
+      document.getElementById('hostOverrideInput').value = hostUrl;
+      refreshQRImage(hostUrl);
+    }
+
+    function updateQRCodeFromInput() {
+      const customUrl = document.getElementById('hostOverrideInput').value.trim();
+      if (!customUrl) return;
+      refreshQRImage(customUrl);
+    }
+
+    function refreshQRImage(baseUrl) {
+      const cleanUrl = baseUrl.split('?')[0];
+      const targetMobileUrl = `${cleanUrl}?role=mobile&room=${roomId}`;
+      document.getElementById('roomCodeDisplay').innerText = roomId;
+      document.getElementById('qrCodeImg').src = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(targetMobileUrl)}`;
+      document.getElementById('mobileDirectLink').href = targetMobileUrl;
+    }
+
+    function openQRModal() {
+      SFX.tap();
+      document.getElementById('qrModal').classList.remove('hidden');
+    }
+    function closeQRModal() {
+      SFX.tap();
+      document.getElementById('qrModal').classList.add('hidden');
+    }
+
+    function renderScreen() {
+      if (questions.length === 0) return;
+      const cur = questions[gameState.qIndex];
+
+      // 规范汉字展示
+      document.getElementById('centerHanziText').innerText = cur.hanzi;
+      document.getElementById('roundIndicator').innerText = `ROUND ${gameState.qIndex + 1} / ${questions.length}`;
+      document.getElementById('revealPinyin').innerText = cur.pinyin;
+      document.getElementById('revealMeaning').innerText = `释义: ${cur.meaning}`;
+      document.getElementById('revealCollocation').innerText = `常用搭配: ${cur.collocation}`;
+
+      if (gameState.revealed) {
+        document.getElementById('scaffoldDrawer').classList.remove('hidden');
+      } else {
+        document.getElementById('scaffoldDrawer').classList.add('hidden');
+      }
+
+      renderTeamState('red', gameState.redBalloons, 'redHealthSlots', 'redBalloonCluster', 'redPilotAvatar', 'redPilotZone');
+      renderTeamState('blue', gameState.blueBalloons, 'blueHealthSlots', 'blueBalloonCluster', 'bluePilotAvatar', 'bluePilotZone');
+    }
+
+    function renderTeamState(team, count, healthId, clusterId, avatarId, zoneId) {
+      const healthEl = document.getElementById(healthId);
+      const clusterEl = document.getElementById(clusterId);
+      const avatarEl = document.getElementById(avatarId);
+      const zoneEl = document.getElementById(zoneId);
+      const color = team === 'red' ? '#FF385C' : '#2B7FFF';
+
+      healthEl.innerHTML = '';
+      for (let i = 0; i < gameState.maxBalloons; i++) {
+        if (i < count) {
+          healthEl.innerHTML += getBalloonSVG(color, 20);
+        } else {
+          healthEl.innerHTML += `<div class="w-5 h-6 rounded-full border-2 border-dashed border-black/40"></div>`;
+        }
+      }
+
+      clusterEl.innerHTML = '';
+      for (let i = 0; i < count; i++) {
+        clusterEl.innerHTML += getBalloonSVG(color, 38);
+      }
+
+      avatarEl.innerHTML = getDetailedPilotSVG(team);
+      if (count === 1) avatarEl.classList.add('animate-panic');
+      else avatarEl.classList.remove('animate-panic');
+
+      const dropPx = (gameState.maxBalloons - count) * 48;
+      if (count > 0) {
+        zoneEl.style.transform = `translateY(${dropPx}px)`;
+        zoneEl.style.opacity = '1';
+      } else {
+        zoneEl.style.transform = `translateY(280px) scale(0.3) rotate(45deg)`;
+        zoneEl.style.opacity = '0';
+      }
+    }
+
+    function startTimer() {
+      clearInterval(gameState.timerInterval);
+      gameState.timer = gameState.maxTime;
+      gameState.timerActive = true;
+      gameState.status = 'ACTIVE';
+      updateTimerUI();
+
+      broadcastPayload({ type: 'SYNC_STATE', status: 'ACTIVE', buzzedTeam: null });
+
+      gameState.timerInterval = setInterval(() => {
+        if (!gameState.timerActive) return;
+        gameState.timer--;
+        updateTimerUI();
+
+        if (gameState.timer <= 0) {
+          clearInterval(gameState.timerInterval);
+          gameState.timerActive = false;
+          gameState.status = 'WAITING';
+          SFX.wrong();
+          document.getElementById('timerNumber').innerText = '00s';
+          broadcastPayload({ type: 'SYNC_STATE', status: 'WAITING', buzzedTeam: null });
+        }
+      }, 1000);
+    }
+
+    function pauseTimer() {
+      gameState.timerActive = false;
+    }
+
+    function resetTimer() {
+      SFX.tap();
+      unlockBuzz();
+      startTimer();
+    }
+
+    function updateTimerUI() {
+      const numEl = document.getElementById('timerNumber');
+      const barEl = document.getElementById('timerProgressBar');
+      numEl.innerText = `${gameState.timer < 10 ? '0' : ''}${gameState.timer}s`;
+      const pct = (gameState.timer / gameState.maxTime) * 100;
+      barEl.style.width = `${pct}%`;
+
+      if (gameState.timer <= 3) {
+        barEl.className = 'absolute bottom-0 left-0 h-2 bg-red-600 transition-all duration-1000 animate-pulse';
+        numEl.classList.add('text-red-500');
+      } else {
+        barEl.className = 'absolute bottom-0 left-0 h-2 bg-emerald-500 transition-all duration-1000';
+        numEl.classList.remove('text-red-500');
+      }
+    }
+
+    function triggerBuzz(team) {
+      if (gameState.buzzedTeam !== null || gameState.status === 'WAITING' || gameState.status === 'GAMEOVER') return;
+      gameState.buzzedTeam = team;
+      gameState.status = 'BUZZED';
+      pauseTimer();
+      SFX.buzz();
+
+      const banner = document.getElementById('buzzOverlayBanner');
+      const tag = document.getElementById('buzzSquadTag');
+      banner.classList.remove('hidden');
+
+      if (team === 'red') {
+        tag.innerText = '🔴 RED SQUAD BUZZED!';
+        tag.style.backgroundColor = '#FF385C';
+        document.getElementById('redBuzzerBtn').classList.add('sc-btn-active');
+      } else {
+        tag.innerText = '🔵 BLUE SQUAD BUZZED!';
+        tag.style.backgroundColor = '#2B7FFF';
+        document.getElementById('blueBuzzerBtn').classList.add('sc-btn-active');
+      }
+
+      broadcastPayload({ type: 'SYNC_STATE', status: 'BUZZED', buzzedTeam: team });
+    }
+
+    function unlockBuzz() {
+      gameState.buzzedTeam = null;
+      document.getElementById('buzzOverlayBanner').classList.add('hidden');
+      document.getElementById('redBuzzerBtn').classList.remove('sc-btn-active');
+      document.getElementById('blueBuzzerBtn').classList.remove('sc-btn-active');
+    }
+
+    function handleVerdict(isCorrect) {
+      if (!gameState.buzzedTeam) return;
+      const answeringTeam = gameState.buzzedTeam;
+      const opponentTeam = answeringTeam === 'red' ? 'blue' : 'red';
+
+      if (isCorrect) {
+        SFX.correct();
+        deductBalloon(opponentTeam);
+      } else {
+        SFX.wrong();
+        deductBalloon(answeringTeam);
+      }
+
+      unlockBuzz();
+      gameState.revealed = true;
+      renderScreen();
+    }
+
+    function deductBalloon(team) {
+      SFX.pop();
+      if (team === 'red') {
+        gameState.redBalloons = Math.max(0, gameState.redBalloons - 1);
+        if (gameState.redBalloons === 0) triggerMonsterExecution('red');
+      } else {
+        gameState.blueBalloons = Math.max(0, gameState.blueBalloons - 1);
+        if (gameState.blueBalloons === 0) triggerMonsterExecution('blue');
+      }
+      renderScreen();
+    }
+
+    function triggerMonsterExecution(defeatedTeam) {
+      gameState.status = 'GAMEOVER';
+      pauseTimer();
+      SFX.slideDrop();
+
+      setTimeout(() => {
+        SFX.chomp();
+        const fish = document.getElementById('monsterFishContainer');
+        fish.style.transform = 'translateY(-40px) scale(1.2)';
+        setTimeout(() => {
+          fish.style.transform = '';
+          showGameOverModal(defeatedTeam === 'red' ? 'blue' : 'red');
+        }, 700);
+      }, 550);
+    }
+
+    function showGameOverModal(winnerSquad) {
+      const isRed = winnerSquad === 'red';
+      document.getElementById('winnerTitle').innerText = isRed ? '🏆 RED SQUAD WINS!' : '🏆 BLUE SQUAD WINS!';
+      document.getElementById('winnerTitle').style.color = isRed ? '#FF385C' : '#2B7FFF';
+      document.getElementById('gameOverModal').classList.remove('hidden');
+      broadcastPayload({ type: 'SYNC_STATE', status: 'GAMEOVER', buzzedTeam: null });
+    }
+
+    function restartGame() {
+      SFX.correct();
+      document.getElementById('gameOverModal').classList.add('hidden');
+
+      gameState.redBalloons = 5;
+      gameState.blueBalloons = 5;
+      gameState.qIndex = 0;
+      gameState.revealed = false;
+      unlockBuzz();
+      renderScreen();
+      startTimer();
+
+      // 通知全场手机端恢复并重选队伍
+      broadcastPayload({ type: 'RESET_GAME' });
+    }
+
+    function toggleReveal() {
+      SFX.tap();
+      gameState.revealed = !gameState.revealed;
+      renderScreen();
+    }
+
+    function speakCurrentWord() {
+      const cur = questions[gameState.qIndex];
+      if ('speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance(cur.hanzi);
+        u.lang = 'zh-CN';
+        u.rate = 0.85;
+        window.speechSynthesis.speak(u);
+      }
+    }
+
+    function navigateQuestion(step) {
+      SFX.tap();
+      const nextIdx = gameState.qIndex + step;
+      if (nextIdx >= questions.length) {
+        const winner = gameState.redBalloons >= gameState.blueBalloons ? 'red' : 'blue';
+        showGameOverModal(winner);
+        return;
+      }
+      gameState.qIndex = (nextIdx + questions.length) % questions.length;
+      gameState.revealed = false;
+      unlockBuzz();
+      renderScreen();
+      startTimer();
+    }
+
+    function toggleAudioMaster() {
+      SFX.muted = !SFX.muted;
+      document.getElementById('audioIcon').innerText = SFX.muted ? '🔇' : '🔊';
+    }
+
+    // ---------- 6. 手机端逻辑 (MOBILE: 全英文、状态持久化、无震动) ----------
+    let mobileSquad = localStorage.getItem('balloon_arena_squad') || null;
+
+    function initMobileMode() {
+      document.getElementById('screenView').classList.add('hidden');
+      document.getElementById('mobileView').classList.remove('hidden');
+      document.getElementById('mobileRoomCodeText').innerText = roomId;
+
+      if (mobileSquad) {
+        showMobileStep2();
+      } else {
+        showMobileStep1();
+      }
+    }
+
+    function showMobileStep1() {
+      document.getElementById('mobileStepSquad').classList.remove('hidden');
+      document.getElementById('mobileStepBuzzer').classList.add('hidden');
+    }
+
+    function showMobileStep2() {
+      document.getElementById('mobileStepSquad').classList.add('hidden');
+      document.getElementById('mobileStepBuzzer').classList.remove('hidden');
+
+      const isRed = mobileSquad === 'red';
+      const badge = document.getElementById('mobileIdentityBadge');
+      badge.innerText = isRed ? '🔴 YOU ARE IN RED SQUAD' : '🔵 YOU ARE IN BLUE SQUAD';
+      badge.style.backgroundColor = isRed ? '#FF385C' : '#2B7FFF';
+      badge.style.color = '#FFFFFF';
+    }
+
+    function mobileChooseSquad(squad) {
+      SFX.tap();
+      mobileSquad = squad;
+      localStorage.setItem('balloon_arena_squad', squad);
+      showMobileStep2();
+    }
+
+    function mobilePressBuzz() {
+      if (!mobileSquad) return;
+      SFX.buzz(); // 仅声音，彻底无设备震动
+      broadcastPayload({ type: 'MOBILE_BUZZ', team: mobileSquad });
+    }
+
+    function updateMobileBuzzerState(status, buzzedTeam) {
+      const btn = document.getElementById('mobileGiantBuzzBtn');
+      const icon = document.getElementById('mobileGiantBtnIcon');
+      const text = document.getElementById('mobileGiantBtnText');
+      const tip = document.getElementById('mobileStatusTip');
+      const isRed = mobileSquad === 'red';
+
+      if (status === 'ACTIVE') {
+        btn.disabled = false;
+        btn.className = `w-full max-w-xs aspect-square rounded-full border-8 border-black flex flex-col items-center justify-center relative select-none transition-all duration-75 text-white active:scale-95 ${
+          isRed ? 'bg-[#FF385C] shadow-[0_12px_0_#8A0020]' : 'bg-[#2B7FFF] shadow-[0_12px_0_#003399]'
+        }`;
+        icon.innerText = '⚡';
+        text.innerText = 'TAP TO BUZZ!';
+        tip.innerText = 'ROUND IN PROGRESS! TAP TO BUZZ!';
+      } else if (status === 'BUZZED') {
+        btn.disabled = true;
+        btn.className = 'w-full max-w-xs aspect-square rounded-full border-8 border-black flex flex-col items-center justify-center relative select-none bg-slate-600 text-slate-400 shadow-[0_4px_0_#334155] cursor-not-allowed';
+        icon.innerText = '🔒';
+        text.innerText = buzzedTeam === mobileSquad ? 'BUZZED!' : 'LOCKED!';
+        tip.innerText = buzzedTeam === mobileSquad ? 'YOUR SQUAD BUZZED! ANSWER NOW!' : 'OPPONENT BUZZED! WAITING...';
+      } else {
+        btn.disabled = true;
+        btn.className = 'w-full max-w-xs aspect-square rounded-full border-8 border-black flex flex-col items-center justify-center relative select-none bg-slate-600 text-slate-400 shadow-[0_4px_0_#334155] cursor-not-allowed';
+        icon.innerText = '⏳';
+        text.innerText = 'WAITING...';
+        tip.innerText = 'WAITING FOR SCREEN TO START NEXT ROUND...';
+      }
+    }
+
+    // ---------- 7. 双向消息分发处理器 ----------
+    function handleIncomingMessage(msg) {
+      if (!msg) return;
+
+      // 手机打招呼 -> 大屏立即补发当前最新状态
+      if (msg.type === 'MOBILE_HELLO' && !isMobileRole) {
+        broadcastPayload({ type: 'SYNC_STATE', status: gameState.status, buzzedTeam: gameState.buzzedTeam });
+      }
+
+      // 手机按铃到达大屏幕
+      if (msg.type === 'MOBILE_BUZZ' && !isMobileRole) {
+        triggerBuzz(msg.team);
+      }
+
+      // 大屏状态到达手机
+      if (msg.type === 'SYNC_STATE' && isMobileRole) {
+        updateMobileBuzzerState(msg.status, msg.buzzedTeam);
+      }
+
+      // 大屏点击【🔄 PLAY AGAIN】-> 手机端清除持久化状态，回归选队 Step 1
+      if (msg.type === 'RESET_GAME' && isMobileRole) {
+        localStorage.removeItem('balloon_arena_squad');
+        mobileSquad = null;
+        showMobileStep1();
+      }
+    }
+
+    // ---------- 8. 快捷键与题库模态 ----------
+    function openQuestionModal() {
+      SFX.tap();
+      renderModalRoundsList();
+      document.getElementById('questionModal').classList.remove('hidden');
+    }
+    function closeQuestionModal() {
+      SFX.tap();
+      document.getElementById('questionModal').classList.add('hidden');
+    }
+    function renderModalRoundsList() {
+      document.getElementById('modalTotalRounds').innerText = questions.length;
+      const listEl = document.getElementById('modalRoundsList');
+      listEl.innerHTML = '';
+      questions.forEach((q, idx) => {
+        listEl.innerHTML += `
+          <div class="flex items-center justify-between p-2.5 bg-white border-2 border-black rounded-xl text-sm shadow-sm cursor-pointer hover:bg-amber-50"
+               onclick="jumpToQuestion(${idx})">
+            <div class="flex items-center gap-2">
+              <span class="font-black text-amber-600 font-mono">#${idx + 1}</span>
+              <strong class="text-xl font-black text-slate-900">${q.hanzi}</strong>
+              <span class="text-amber-800 font-mono font-bold">(${q.pinyin})</span>
+              <span class="text-slate-500 font-bold text-xs">- ${q.meaning}</span>
+            </div>
+            <button onclick="event.stopPropagation(); deleteQuestionItem(${idx})" class="text-rose-500 hover:text-rose-700 font-black p-1 text-base">🗑</button>
+          </div>
+        `;
+      });
+    }
+    function handleAddWord() {
+      const input = document.getElementById('smartInput').value.trim();
+      if (!input) return;
+      const lower = input.toLowerCase();
+      let matched = BUILTIN_DICTIONARY.find(item => item.hanzi === input || item.meaning.toLowerCase().includes(lower));
+      let newQ = matched ? { ...matched } : { hanzi: input, pinyin: '—', meaning: 'Custom Entry', collocation: `${input} 常用搭配` };
+      questions.push(newQ);
+      localStorage.setItem('hsk_supercell_bank', JSON.stringify(questions));
+      renderModalRoundsList();
+      document.getElementById('smartInput').value = '';
+      SFX.correct();
+    }
+    function deleteQuestionItem(idx) {
+      SFX.tap();
+      questions.splice(idx, 1);
+      localStorage.setItem('hsk_supercell_bank', JSON.stringify(questions));
+      if (gameState.qIndex >= questions.length) gameState.qIndex = Math.max(0, questions.length - 1);
+      renderModalRoundsList();
+    }
+    function jumpToQuestion(idx) {
+      gameState.qIndex = idx;
+      closeQuestionModal();
+      gameState.revealed = false;
+      unlockBuzz();
+      renderScreen();
+      startTimer();
+    }
+    function loadDefaultPresetQuestions() {
+      SFX.correct();
+      questions = [...BUILTIN_DICTIONARY.slice(0, 5)];
+      localStorage.setItem('hsk_supercell_bank', JSON.stringify(questions));
+      renderModalRoundsList();
+    }
+    function clearAllQuestions() {
+      if (confirm('确认清空所有题目？')) {
+        questions = [];
+        localStorage.setItem('hsk_supercell_bank', JSON.stringify(questions));
+        renderModalRoundsList();
+      }
+    }
+    function applyAndCloseModal() {
+      SFX.correct();
+      gameState.redBalloons = 5;
+      gameState.blueBalloons = 5;
+      gameState.qIndex = 0;
+      gameState.revealed = false;
+      unlockBuzz();
+      closeQuestionModal();
+      renderScreen();
+      startTimer();
+    }
+
+    // 全局快捷键
+    window.addEventListener('keydown', (e) => {
+      if (isMobileRole) return;
+      if (['input', 'textarea'].includes(document.activeElement.tagName.toLowerCase())) return;
+      if (e.repeat) return;
+      const key = e.key.toUpperCase();
+      if (key === 'A') triggerBuzz('red');
+      else if (key === 'L') triggerBuzz('blue');
+      else if (key === ' ') { e.preventDefault(); toggleReveal(); }
+      else if (e.key === 'ArrowRight') navigateQuestion(1);
+      else if (e.key === 'ArrowLeft') navigateQuestion(-1);
+    });
+
+    // 页面任意处点击唤醒 Web Audio
+    window.addEventListener('click', () => SFX.init(), { once: true });
+
+    // ---------- 9. 启动入口 ----------
+    window.addEventListener('DOMContentLoaded', () => {
+      initNetworkComm();
+      if (isMobileRole) {
+        initMobileMode();
+      } else {
+        initScreenMode();
+      }
+    });
+  </script>
+</body>
+</html>
